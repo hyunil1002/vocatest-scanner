@@ -143,15 +143,32 @@ def parse_chunk(structured_llm, pdf_path: str, page_indices: list[int], chunk_in
     ]
 
     start_time = time.time()
-    try:
-        parsed: ParsedChunk = structured_llm.invoke(messages)
-        duration = time.time() - start_time
-        logger.info(f"청크 {chunk_index} API 응답 성공 (소요시간: {duration:.1f}s)")
-    except Exception as e:
-        logger.error(f"청크 {chunk_index} Gemini 호출 실패: {e}")
-        with open(DEBUG_LOG_FILE, "a", encoding="utf-8") as f:
-            f.write(f"\n--- CHUNK {chunk_index} FAILURE ---\nError: {e}\n")
-        raise
+    parsed = None
+    max_retries = 4
+    
+    for attempt in range(max_retries):
+        try:
+            parsed = structured_llm.invoke(messages)
+            duration = time.time() - start_time
+            logger.info(f"청크 {chunk_index} API 응답 성공 (소요시간: {duration:.1f}s)")
+            break
+        except Exception as e:
+            error_str = str(e)
+            if "429" in error_str or "RESOURCE_EXHAUSTED" in error_str:
+                if attempt < max_retries - 1:
+                    wait_time = 15 * (attempt + 1)
+                    logger.warning(f"청크 {chunk_index} Rate Limit (429) - {wait_time}초 후 재시도 ({attempt+1}/{max_retries})")
+                    time.sleep(wait_time)
+                else:
+                    logger.error(f"청크 {chunk_index} API 호출 최종 실패 (Rate Limit): {e}")
+                    with open(DEBUG_LOG_FILE, "a", encoding="utf-8") as f:
+                        f.write(f"\n--- CHUNK {chunk_index} FAILURE (429) ---\nError: {e}\n")
+                    raise
+            else:
+                logger.error(f"청크 {chunk_index} Gemini 호출 실패: {e}")
+                with open(DEBUG_LOG_FILE, "a", encoding="utf-8") as f:
+                    f.write(f"\n--- CHUNK {chunk_index} FAILURE ---\nError: {e}\n")
+                raise
 
     if parsed and parsed.words:
         for word in parsed.words:
@@ -196,7 +213,7 @@ def parse_pdf(
 
     start_time = time.time()
     completed = 0
-    max_workers = 15  # Gemini 3 Flash의 고능률을 위한 워커 상향
+    max_workers = 3  # Gemini API Rate Limit 방지를 위해 기존 15에서 3으로 하향 조정
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
         # 렌더링과 파싱을 한 번에 submit
