@@ -121,7 +121,14 @@ if not st.session_state.is_parsed:
                 fname = up_file.name
                 add_log(f"[{f_idx+1}/{total_files}] '{fname}' 분석 시작...")
                 
+                from streamlit.runtime.scriptrunner import get_script_run_ctx, add_script_run_ctx
+                ctx = get_script_run_ctx()
+
                 def update_progress(percent: float, message: str):
+                    # 백그라운드 스레드에서 Streamlit UI를 업데이트하기 위해 컨텍스트 주입
+                    if ctx:
+                        add_script_run_ctx(ctx=ctx)
+
                     # 파일별 내부 진행도 반영
                     overall_pct = (f_idx / total_files * 100) + (percent / total_files)
                     combined_msg = f"[{f_idx+1}/{total_files}] {fname}: {message}"
