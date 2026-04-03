@@ -30,10 +30,10 @@ if not any(isinstance(h, logging.FileHandler) for h in logger.handlers):
 # 일일 쿼터 소진 시 자동으로 다음 모델로 강등
 # ──────────────────────────────────────────────
 MODEL_FALLBACK_CHAIN = [
-    "gemini-flash-latest",      # gemini-3-flash (최신, 최고 성능)
-    "gemini-2.5-flash-preview-04-17",  # gemini-2.5-flash
-    "gemini-2.0-flash",         # gemini-2.0-flash
-    "gemini-1.5-flash",         # gemini-1.5-flash (구버전, 쿼터 여유)
+    "gemini-1.5-flash",      # 1순위: 최신 고성능/고속 모델
+    "gemini-1.5-flash-8b",   # 2순위: 초고속 경량 모델 (쿼터 여유)
+    "gemini-1.5-pro",        # 3순위: 논리력 강화 모델
+    "gemini-1.0-pro",        # 4순위: 텍스트 전용 안정 모델
 ]
 
 # 전역 모델 풀 상태 (스레드 안전)
@@ -67,8 +67,14 @@ def mark_model_exhausted(model_name: str) -> str | None:
         return None
 
 def is_daily_quota_error(error_str: str) -> bool:
-    """일일 쿼터 초과 에러인지 구분한다 (vs 분당 속도 제한)."""
-    return "PerDay" in error_str or "GenerateRequestsPerDayPerProject" in error_str
+    """일일 쿼터 초과 또는 권한 에러인지 구분한다."""
+    # 429 RESOURCE_EXHAUSTED (Quota)
+    if "PerDay" in error_str or "GenerateRequestsPerDayPerProject" in error_str:
+        return True
+    # 403 PERMISSION_DENIED (API Key Leaked / Revoked)
+    if "PERMISSION_DENIED" in error_str or "leaked" in error_str:
+        return True
+    return False
 
 def reset_model_state():
     """파싱 세션 시작 시 모델 상태를 초기화한다."""
