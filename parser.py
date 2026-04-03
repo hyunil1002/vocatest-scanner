@@ -8,6 +8,7 @@ import os
 import time
 from typing import Any, Callable
 import io
+import concurrent.futures
 
 import pypdfium2 as pdfium
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -28,10 +29,10 @@ if not any(isinstance(h, logging.FileHandler) for h in logger.handlers):
 # ──────────────────────────────────────────────
 # 설정 상수
 # ──────────────────────────────────────────────
-CHUNK_SIZE_PAGES = 2
+CHUNK_SIZE_PAGES = 5
 DEFAULT_MODEL = "gemini-flash-latest"
 DEFAULT_TEMPERATURE = 0.0
-DEFAULT_IMAGE_SCALE = 3.0  # 4.0에서 3.0으로 조정 (용량 제한 및 성능 균형)
+DEFAULT_IMAGE_SCALE = 2.0  # 고속 병렬 처리 최적화를 위해 2.0 해상도 적용
 
 # ── 안전 필터 설정 (오탐 방지용 비활성화) ──
 SAFETY_SETTINGS = {
@@ -186,7 +187,7 @@ def parse_pdf(
     temperature: float = DEFAULT_TEMPERATURE,
     api_key: str | None = None,
     chunk_size: int = CHUNK_SIZE_PAGES,
-    progress_callback: Callable[[int, str], None] | None = None
+    progress_callback: Callable[[float, str], None] | None = None
 ) -> list[Word]:
     
     images = extract_images_from_pdf(pdf_path, progress_callback=progress_callback)
@@ -202,24 +203,52 @@ def parse_pdf(
     total_chunks = len(chunks)
 
     if progress_callback:
-        progress_callback(10, "AI 모델 스캔 준비 완료!")
+        progress_callback(10.0, f"초고속 병렬 엔진 스캔 준비 완료 (총 {total_chunks}조각)")
 
-    for idx, chunk_imgs in enumerate(chunks):
-        if progress_callback:
-            # 총 진행 10% ~ 95% 구간을 LLM 청크 파싱에 할당
-            base_percent = 10 + int(85 * (idx / total_chunks))
-            progress_callback(base_percent, f"AI가 단어를 인식하고 있어요... ({idx+1}/{total_chunks}조각)")
+    start_time = time.time()
+    completed = 0
+    max_workers = 8  # 극한의 동시성 처리 (초고속화)
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+        # submit all tasks
+        future_to_idx = {
+            executor.submit(parse_chunk, llm_engine, chunk_imgs, idx): idx
+            for idx, chunk_imgs in enumerate(chunks)
+        }
+        
+        for future in concurrent.futures.as_completed(future_to_idx):
+            idx = future_to_idx[future]
+            completed += 1
             
-        try:
-            result = parse_chunk(llm_engine, chunk_imgs, idx)
-            all_words.extend(result.words)
-        except Exception as e:
-            logger.error(f"청크 {idx} 처리 실패, 건너뜀: {e}")
-            failed_chunks.append(idx)
-            continue
+            try:
+                result = future.result()
+                all_words.extend(result.words)
+            except Exception as e:
+                logger.error(f"청크 {idx} 처리 실패, 건너뜀: {e}")
+                failed_chunks.append(idx)
+            
+            # 남은 예상 시간(ETA) 계산
+            if progress_callback:
+                elapsed = time.time() - start_time
+                avg_time_per_chunk = elapsed / completed
+                remaining_chunks = total_chunks - completed
+                eta_seconds = int(avg_time_per_chunk * remaining_chunks)
+                
+                # 진행률 계산 (부드러운 소수점 퍼센트 적용: 10% ~ 95%)
+                percent = 10.0 + (85.0 * (completed / total_chunks))
+                
+                if remaining_chunks > 0:
+                    mins, secs = divmod(eta_seconds, 60)
+                    time_str = f"{mins}분 {secs}초" if mins > 0 else f"{secs}초"
+                    message = f"AI 스캔 중 ({completed}/{total_chunks}) • 예상 남은 시간: {time_str}"
+                else:
+                    message = "거의 다 마쳤습니다! 데이터 정리 중..."
+                
+                # 소수점 1자리 포맷
+                progress_callback(round(percent, 1), message)
 
     if progress_callback:
-        progress_callback(100, "분석 완료!")
+        progress_callback(100.0, "분석 완벽하게 완료!")
 
-    logger.info(f"=== 파싱 최종 리포트 ===\n  총 페이지: {len(images)}\n  성공 페이지: {len(images)-len(failed_chunks)*chunk_size}\n  총 추출 단어: {len(all_words)}개")
+    logger.info(f"=== 고속 파싱 리포트 ===\n  총 길이: {len(images)}페이지\n  총 소요시간: {time.time() - start_time:.1f}초\n  추출 단어: {len(all_words)}개")
     return all_words

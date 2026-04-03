@@ -169,7 +169,7 @@ div[data-testid="stDataEditor"] {
     height: 100%;
     background-color: #3182f6;
     border-radius: 999px;
-    transition: width 0.4s ease;
+    transition: width 0.5s cubic-bezier(0.4, 0, 0.2, 1);
     position: relative;
     overflow: hidden;
 }
@@ -240,10 +240,10 @@ if not st.session_state.is_parsed:
                 """
                 progress_container.markdown(initial_html, unsafe_allow_html=True)
                 
-                def update_progress(percent: int, message: str):
+                def update_progress(percent: float, message: str):
                     html = f"""
                     <div>
-                        <div class="shimmer-text">{message} &nbsp;<span style="color:#3182f6;">{percent}%</span></div>
+                        <div class="shimmer-text">{message} &nbsp;<span style="color:#3182f6; font-weight:800;">{percent}%</span></div>
                         <div class="shimmer-progress-container">
                             <div class="shimmer-progress-bar" style="width: {percent}%;"></div>
                         </div>
