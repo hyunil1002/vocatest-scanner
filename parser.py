@@ -30,10 +30,10 @@ if not any(isinstance(h, logging.FileHandler) for h in logger.handlers):
 # 일일 쿼터 소진 시 자동으로 다음 모델로 강등
 # ──────────────────────────────────────────────
 MODEL_FALLBACK_CHAIN = [
-    "gemini-1.5-flash",      # 1순위: 최신 고성능/고속 모델
-    "gemini-1.5-flash-8b",   # 2순위: 초고속 경량 모델 (쿼터 여유)
-    "gemini-1.5-pro",        # 3순위: 논리력 강화 모델
-    "gemini-1.0-pro",        # 4순위: 텍스트 전용 안정 모델
+    "gemini-flash-latest",       # 1순위: 최신 Flash (alias, 항상 최신)
+    "gemini-2.5-flash",          # 2순위: Gemini 2.5 Flash
+    "gemini-2.0-flash",          # 3순위: Gemini 2.0 Flash (안정적)
+    "gemini-2.0-flash-lite",     # 4순위: 경량 Flash (쿼터 여유)
 ]
 
 # 전역 모델 풀 상태 (스레드 안전)
