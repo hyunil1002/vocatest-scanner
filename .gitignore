@@ -1,0 +1,12 @@
+.env
+.env.example
+__pycache__/
+*.py[cod]
+*$py.class
+.streamlit/secrets.toml
+parsing_debug.log
+debug_page.png
+debug_page_1.png
+sample_vocab.pdf
+*.log
+.DS_Store
