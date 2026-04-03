@@ -43,26 +43,21 @@ SAFETY_SETTINGS = {
 }
 
 # ──────────────────────────────────────────────
-# 1. PDF 페이지를 이미지(Base64)로 추출
+# 1. PDF 특정 페이지 범위를 이미지(Base64)로 추출
 # ──────────────────────────────────────────────
-def extract_images_from_pdf(
+def extract_images_from_pdf_range(
     pdf_path: str,
-    scale: float = DEFAULT_IMAGE_SCALE,
-    progress_callback: Callable[[int, str], None] | None = None
+    page_indices: list[int],
+    scale: float = DEFAULT_IMAGE_SCALE
 ) -> list[str]:
     """
-    PDF의 각 페이지를 고해상도 PNG 이미지로 변환한 후 Base64 문자열 리스트로 반환한다.
+    지정된 페이지 번호 리스트에 해당하는 페이지들을 고해상도 PNG 이미지로 변환한다.
     """
-    if not os.path.isfile(pdf_path):
-        logger.error(f"PDF 파일을 찾을 수 없습니다: {pdf_path}")
-        raise FileNotFoundError(f"PDF 파일을 찾을 수 없습니다: {pdf_path}")
-
     base64_images: list[str] = []
-    
     try:
         with pdfium.PdfDocument(pdf_path) as pdf:
-            total_pages = len(pdf)
-            for i in range(total_pages):
+            for i in page_indices:
+                if i >= len(pdf): continue
                 page = pdf[i]
                 bitmap = page.render(scale=scale)
                 pil_image = bitmap.to_pil()
@@ -73,35 +68,21 @@ def extract_images_from_pdf(
                 
                 b64 = base64.b64encode(img_bytes).decode("utf-8")
                 base64_images.append(b64)
-                
-                if progress_callback:
-                    # 이미지 변환 단계는 총 진행의 10% 정도 할당
-                    pct = int((i + 1) / total_pages * 10)
-                    progress_callback(pct, f"PDF 문서 확인 중... ({i+1}/{total_pages} 페이지)")
-                    
-                logger.info(f"페이지 {i+1} 이미지 추출 완료 (크기: {len(img_bytes)/1024:.1f} KB)")
     except Exception as e:
-        logger.error("PDF 이미지 추출 중 오류 발생: %s", e)
+        logger.error(f"페이지 범위 {page_indices} 이미지 추출 중 오류: {e}")
         raise
-
-    logger.info("PDF 이미지 변환 완료: %d 페이지 (Scale: %.1f)", len(base64_images), scale)
     return base64_images
 
 
 # ──────────────────────────────────────────────
-# 2. 이미지 청킹
+# 2. 청킹 (페이지 번호 기준)
 # ──────────────────────────────────────────────
-def chunk_images(images: list[str], chunk_size: int = CHUNK_SIZE_PAGES) -> list[list[str]]:
-    """페이지 이미지 리스트를 청크 단위로 나눈다."""
-    chunks: list[list[str]] = []
-    total_chunks = math.ceil(len(images) / chunk_size)
-
-    for i in range(total_chunks):
-        start = i * chunk_size
-        end = min(start + chunk_size, len(images))
-        chunks.append(images[start:end])
-
-    logger.info("청킹 완료: %d 페이지 -> %d 청크 (청크 크기: %d)", len(images), len(chunks), chunk_size)
+def chunk_page_indices(total_pages: int, chunk_size: int = CHUNK_SIZE_PAGES) -> list[list[int]]:
+    """페이지 번호를 청크 단위로 나눈다."""
+    chunks: list[list[int]] = []
+    for i in range(0, total_pages, chunk_size):
+        end = min(i + chunk_size, total_pages)
+        chunks.append(list(range(i, end)))
     return chunks
 
 
@@ -137,12 +118,15 @@ def build_llm(
     return llm.with_structured_output(ParsedChunk, method="json_schema")
 
 
-def parse_chunk(structured_llm, chunk_images_b64: list[str], chunk_index: int) -> ParsedChunk:
+def parse_chunk(structured_llm, pdf_path: str, page_indices: list[int], chunk_index: int) -> ParsedChunk:
+    logger.info(f"청크 {chunk_index} 렌더링 및 파싱 시작 (페이지: {page_indices})")
+    
+    # 1. 렌더링 (이 단계가 각 스레드에서 병렬로 진행됨)
+    chunk_images_b64 = extract_images_from_pdf_range(pdf_path, page_indices)
+    
     total_b64_size = sum(len(b) for b in chunk_images_b64)
-    logger.info(f"청크 {chunk_index} 파싱 시작 (이미지 {len(chunk_images_b64)}개, 총 Base64 크기: {total_b64_size/1024/1024:.1f} MB)")
-
     if total_b64_size > 20 * 1024 * 1024:
-        logger.warning(f"경고: 청크 {chunk_index}의 이미지 크기가 20MB를 초과합니다. API가 거부할 수 있습니다.")
+        logger.warning(f"경고: 청크 {chunk_index} 이미지 크기가 {total_b64_size/1024/1024:.1f}MB입니다.")
 
     content_list = [
         {"type": "text", "text": "Identify and extract all word items from the following images."}
@@ -165,7 +149,6 @@ def parse_chunk(structured_llm, chunk_images_b64: list[str], chunk_index: int) -
         logger.info(f"청크 {chunk_index} API 응답 성공 (소요시간: {duration:.1f}s)")
     except Exception as e:
         logger.error(f"청크 {chunk_index} Gemini 호출 실패: {e}")
-        # 상세 분석을 위해 로그 기록
         with open(DEBUG_LOG_FILE, "a", encoding="utf-8") as f:
             f.write(f"\n--- CHUNK {chunk_index} FAILURE ---\nError: {e}\n")
         raise
@@ -190,30 +173,36 @@ def parse_pdf(
     progress_callback: Callable[[float, str], None] | None = None
 ) -> list[Word]:
     
-    images = extract_images_from_pdf(pdf_path, progress_callback=progress_callback)
-    if not images:
-        logger.warning("PDF에서 이미지를 추출할 수 없습니다.")
+    if not os.path.isfile(pdf_path):
+        raise FileNotFoundError(f"PDF 파일을 찾을 수 없습니다: {pdf_path}")
+
+    # 1. 문서 정보 미리 파악
+    with pdfium.PdfDocument(pdf_path) as pdf:
+        total_pages = len(pdf)
+    
+    if total_pages == 0:
         return []
 
-    chunks = chunk_images(images, chunk_size)
+    chunks = chunk_page_indices(total_pages, chunk_size)
+    total_chunks = len(chunks)
+    
     llm_engine = build_llm(model_name=model_name, temperature=temperature, api_key=api_key)
 
     all_words: list[Word] = []
     failed_chunks: list[int] = []
-    total_chunks = len(chunks)
-
+    
     if progress_callback:
-        progress_callback(10.0, f"초고속 병렬 엔진 스캔 준비 완료 (총 {total_chunks}조각)")
+        progress_callback(5.0, f"초고속 병렬 준비 완료 (총 {total_pages}페이지, {total_chunks}청크)")
 
     start_time = time.time()
     completed = 0
-    max_workers = 8  # 극한의 동시성 처리 (초고속화)
+    max_workers = 15  # Gemini 3 Flash의 고능률을 위한 워커 상향
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-        # submit all tasks
+        # 렌더링과 파싱을 한 번에 submit
         future_to_idx = {
-            executor.submit(parse_chunk, llm_engine, chunk_imgs, idx): idx
-            for idx, chunk_imgs in enumerate(chunks)
+            executor.submit(parse_chunk, llm_engine, pdf_path, page_indices, idx): idx
+            for idx, page_indices in enumerate(chunks)
         }
         
         for future in concurrent.futures.as_completed(future_to_idx):
@@ -224,18 +213,17 @@ def parse_pdf(
                 result = future.result()
                 all_words.extend(result.words)
             except Exception as e:
-                logger.error(f"청크 {idx} 처리 실패, 건너뜀: {e}")
+                logger.error(f"청크 {idx} 처리 실패: {e}")
                 failed_chunks.append(idx)
             
-            # 남은 예상 시간(ETA) 계산
+            # ETA 및 진행률 계산
             if progress_callback:
                 elapsed = time.time() - start_time
                 avg_time_per_chunk = elapsed / completed
                 remaining_chunks = total_chunks - completed
                 eta_seconds = int(avg_time_per_chunk * remaining_chunks)
                 
-                # 진행률 계산 (부드러운 소수점 퍼센트 적용: 10% ~ 95%)
-                percent = 10.0 + (85.0 * (completed / total_chunks))
+                percent = 5.0 + (90.0 * (completed / total_chunks))
                 
                 if remaining_chunks > 0:
                     mins, secs = divmod(eta_seconds, 60)
@@ -244,11 +232,11 @@ def parse_pdf(
                 else:
                     message = "거의 다 마쳤습니다! 데이터 정리 중..."
                 
-                # 소수점 1자리 포맷
                 progress_callback(round(percent, 1), message)
 
     if progress_callback:
         progress_callback(100.0, "분석 완벽하게 완료!")
 
-    logger.info(f"=== 고속 파싱 리포트 ===\n  총 길이: {len(images)}페이지\n  총 소요시간: {time.time() - start_time:.1f}초\n  추출 단어: {len(all_words)}개")
+    logger.info(f"=== 고속 파싱 리포트 ===\n  총 길이: {total_pages}페이지\n  총 소요시간: {time.time() - start_time:.1f}초\n  추출 단어: {len(all_words)}개")
     return all_words
+

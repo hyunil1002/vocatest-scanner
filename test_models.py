@@ -94,27 +94,23 @@ def test_braces_ok():
     ex = Example(meaning_order=1, english_sentence="I {love} you.", korean_translation="나는 너를 사랑해.")
     assert "{love}" in ex.english_sentence
 
-def test_braces_missing():
-    try:
-        Example(meaning_order=1, english_sentence="I love you.", korean_translation="나는 너를 사랑해.")
-        assert False, "검증 실패: 예외가 발생해야 함"
-    except ValidationError:
-        pass
+def test_braces_missing_lenient():
+    # 현재 models.py는 파이프라인 중단을 막기 위해 에러 대신 경고를 출력하도록 설정됨
+    ex = Example(meaning_order=1, english_sentence="I love you.", korean_translation="나는 너를 사랑해.")
+    assert "{" not in ex.english_sentence
 
-def test_braces_multiple_rejected():
-    try:
-        Example(meaning_order=1, english_sentence="She {loves} me, and he {loves} her.", korean_translation="테스트")
-        assert False, "검증 실패: 중괄호 2개는 거부되어야 함"
-    except ValidationError:
-        pass
+def test_braces_multiple_lenient():
+    # 중괄호가 여러 개인 경우도 현재는 경고만 발생함
+    ex = Example(meaning_order=1, english_sentence="She {loves} me, and he {loves} her.", korean_translation="테스트")
+    assert "{loves}" in ex.english_sentence
 
 def test_braces_single_correct():
     ex = Example(meaning_order=1, english_sentence="She {loves} me, and he loves her.", korean_translation="그녀는 나를 사랑하고, 그는 그녀를 사랑한다.")
     assert ex.english_sentence.count("{") == 1
 
 test("정상 중괄호 1개", test_braces_ok)
-test("중괄호 누락 → ValidationError", test_braces_missing)
-test("중괄호 2개 → ValidationError", test_braces_multiple_rejected)
+test("중괄호 누락 (경고 모드, 에러 미발생)", test_braces_missing_lenient)
+test("중괄호 2개 (경고 모드, 에러 미발생)", test_braces_multiple_lenient)
 test("동일 단어 반복 시 1개만 허용", test_braces_single_correct)
 
 
