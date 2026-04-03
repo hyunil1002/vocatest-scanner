@@ -326,8 +326,13 @@ def parse_pdf(
                 result = future.result()
                 all_words.extend(result.words)
             except Exception as e:
+                import traceback
+                tb = traceback.format_exc()
+                print(f"==========================================")
+                print(f"CRITICAL ERROR IN CHUNK {idx}:\n{tb}")
+                print(f"==========================================")
                 logger.error(f"청크 {idx} 최종 실패: {e}")
-                failed_chunks.append(idx)
+                raise Exception(f"[Chunk {idx} Failed] {e}\n\n{tb}")
 
     if progress_callback:
         active = get_active_model() or "exhausted"

@@ -20,7 +20,7 @@ from parser import parse_pdf
 from models import flatten_document, unflatten_document, Word, Meaning, Example
 
 # .env 파일 로드
-load_dotenv()
+load_dotenv(override=True)
 
 API_URL = "http://localhost:8000/api/words"
 
@@ -153,8 +153,11 @@ if not st.session_state.is_parsed:
                     
                     if os.path.exists(tmp_path): os.remove(tmp_path)
                 except Exception as e:
+                    import traceback
+                    tb = traceback.format_exc()
                     add_log(f"오류 발생 ({fname}): {e}")
-                    st.error(f"'{fname}' 처리 중 오류: {e}")
+                    st.error(f"'{fname}' 처리 중 치명적 오류:\n{e}\n\n상세 정보:\n{tb}")
+                    st.session_state.is_parsed = False
 
             if all_merged_words:
                 st.session_state.df = flatten_document(all_merged_words)
